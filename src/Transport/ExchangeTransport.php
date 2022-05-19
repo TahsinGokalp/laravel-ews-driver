@@ -1,81 +1,109 @@
 <?php
 
-namespace Adeboyed\LaravelExchangeDriver\Transport;
+namespace TahsinGokalp\LaravelEwsDriver\Transport;
 
-use Illuminate\Mail\Transport\Transport;
-use Swift_Mime_SimpleMessage;
+use jamesiarmes\PhpEws\ArrayType\ArrayOfRecipientsType;
+use jamesiarmes\PhpEws\ArrayType\NonEmptyArrayOfAllItemsType;
+use jamesiarmes\PhpEws\ArrayType\NonEmptyArrayOfAttachmentsType;
+use jamesiarmes\PhpEws\Client;
+use jamesiarmes\PhpEws\Enumeration\BodyTypeType;
+use jamesiarmes\PhpEws\Enumeration\ResponseClassType;
+use jamesiarmes\PhpEws\Request\CreateItemType;
+use jamesiarmes\PhpEws\Type\BodyType;
+use jamesiarmes\PhpEws\Type\EmailAddressType;
+use jamesiarmes\PhpEws\Type\FileAttachmentType;
+use jamesiarmes\PhpEws\Type\MessageType;
+use jamesiarmes\PhpEws\Type\SingleRecipientType;
+use Symfony\Component\Mailer\SentMessage;
+use Symfony\Component\Mailer\Transport\AbstractTransport;
+use Symfony\Component\Mime\Address;
+use Symfony\Component\Mime\MessageConverter;
+use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
+use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
 
-use \jamesiarmes\PhpEws\Client;
-use \jamesiarmes\PhpEws\Request\CreateItemType;
-
-use \jamesiarmes\PhpEws\ArrayType\ArrayOfRecipientsType;
-use \jamesiarmes\PhpEws\ArrayType\NonEmptyArrayOfAllItemsType;
-
-use \jamesiarmes\PhpEws\Enumeration\BodyTypeType;
-use \jamesiarmes\PhpEws\Enumeration\ResponseClassType;
-
-use \jamesiarmes\PhpEws\Type\BodyType;
-use \jamesiarmes\PhpEws\Type\EmailAddressType;
-use \jamesiarmes\PhpEws\Type\MessageType;
-use \jamesiarmes\PhpEws\Type\SingleRecipientType;
-
-
-class ExchangeTransport extends Transport
+class ExchangeTransport extends AbstractTransport
 {
+    protected EwsDriverConfig $config;
 
-    protected $host;
-    protected $username;
-    protected $password;
-    protected $messageDispositionType;
-
-    public function __construct($host, $username, $password, $messageDispositionType)
+    public function __construct(EwsDriverConfig $config)
     {
-        $this->host = $host;
-        $this->username = $username;
-        $this->password = $password;
-        $this->messageDispositionType = $messageDispositionType;
+        parent::__construct();
+        $this->config = $config;
     }
 
-    public function send(Swift_Mime_SimpleMessage $simpleMessage, &$failedRecipients = null)
-    {
+    /**
+     * @throws EwsException
+     */
+    protected function doSend(SentMessage $message): void {
 
-        $this->beforeSendPerformed($simpleMessage);
+        $email = MessageConverter::toEmail($message->getOriginalMessage());
 
         $client = new Client(
-            $this->host,
-            $this->username,
-            $this->password
+            $this->config->host,
+            $this->config->username,
+            $this->config->password,
+            $this->config->version
         );
 
         $request = new CreateItemType();
         $request->Items = new NonEmptyArrayOfAllItemsType();
 
-        $request->MessageDisposition = $this->messageDispositionType;
+        $request->MessageDisposition = $this->config->messageDispositionType;
 
         // Create the ewsMessage.
         $ewsMessage = new MessageType();
-        $ewsMessage->Subject = $simpleMessage->getSubject();
+        $ewsMessage->Subject = $email->getSubject();
         $ewsMessage->ToRecipients = new ArrayOfRecipientsType();
 
         // Set the sender.
         $ewsMessage->From = new SingleRecipientType();
         $ewsMessage->From->Mailbox = new EmailAddressType();
-        $ewsMessage->From->Mailbox->EmailAddress = config('mail.from.address');
+        $ewsMessage->From->Mailbox->EmailAddress = $this->config->from;
 
         // Set the recipient.
-        foreach ($this->allContacts($simpleMessage) as $email => $name) {
-            $recipient = new EmailAddressType();
-            $recipient->EmailAddress = $email;
-            if ($name != null) {
-                $recipient->Name = $name;
-            }
-            $ewsMessage->ToRecipients->Mailbox[] = $recipient;
+        foreach ($message->getTo() as $address) {
+            $ewsMessage->ToRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
+        }
+
+        // Set the CC
+        foreach ($message->getCc() as $address) {
+            $ewsMessage->CcRecipients ??= new ArrayOfRecipientsType();
+            $ewsMessage->CcRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
+        }
+
+        // Set the BCC
+        foreach ($message->getBcc() as $address) {
+            $ewsMessage->BccRecipients ??= new ArrayOfRecipientsType();
+            $ewsMessage->BccRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
 
         // Set the ewsMessage body.
         $ewsMessage->Body = new BodyType();
-        $ewsMessage->Body->BodyType = BodyTypeType::HTML;
-        $ewsMessage->Body->_ = $simpleMessage->getBody();
+
+        if ($htmlBody = $email->getHtmlBody()) {
+            $ewsMessage->Body->BodyType = BodyTypeType::HTML;
+            $ewsMessage->Body->_ = $htmlBody;
+        } else {
+            $ewsMessage->Body->BodyType = BodyTypeType::TEXT;
+            $ewsMessage->Body->_ = $email->getTextBody();
+        }
+
+        // Add attachments
+        foreach ($email->getAttachments() as $attachment) {
+            $headers = $attachment->getPreparedHeaders();
+            $name = $headers->getHeaderParameter('content-type', 'name');
+            $contentType = $headers->getHeaderBody('content-type');
+
+            $fileAttachment = new FileAttachmentType();
+            $fileAttachment->Content = $attachment->getBody();
+            $fileAttachment->ContentId = $attachment->getContentId();
+            $fileAttachment->Name = $name;
+            $fileAttachment->ContentType = $contentType;
+
+            $ewsMessage->Attachments ??= new NonEmptyArrayOfAttachmentsType();
+            $ewsMessage->Attachments->FileAttachment ??= [];
+            $ewsMessage->Attachments->FileAttachment[] = $fileAttachment;
+        }
 
         $request->Items->Message[] = $ewsMessage;
         $response = $client->CreateItem($request);
@@ -84,33 +112,36 @@ class ExchangeTransport extends Transport
         $response_messages = $response->ResponseMessages->CreateItemResponseMessage;
         foreach ($response_messages as $response_message) {
             // Make sure the request succeeded.
-            if ($response_message->ResponseClass != ResponseClassType::SUCCESS) {
+            if ($response_message->ResponseClass !== ResponseClassType::SUCCESS) {
                 $code = $response_message->ResponseCode;
-                $ewsMessage
-                    = $response_message->MessageText;
-                fwrite(STDERR, "Message failed to create with \"$code: $ewsMessage\"\n");
-                continue;
+                $ewsMessage = $response_message->MessageText;
+                throw new EwsException("Message failed to create with \"$code: $ewsMessage\"\n");
             }
         }
-
-
-        $this->sendPerformed($simpleMessage);
-
-        return $this->numberOfRecipients($simpleMessage);
     }
 
     /**
-     * Get all of the contacts for the ewsMessage
+     * Get the string representation of the transport.
      *
-     * @param \Swift_Mime_SimpleMessage $ewsMessage
-     * @return array
+     * @return string
      */
-    protected function allContacts(Swift_Mime_SimpleMessage $message)
+    public function __toString(): string
     {
-        return array_merge(
-            (array) $message->getTo(),
-            (array) $message->getCc(),
-            (array) $message->getBcc()
-        );
+        return 'exchange';
+    }
+
+    /**
+     * @param  Address  $address
+     * @return EmailAddressType
+     */
+    protected function addressToExchangeAddress(Address $address): EmailAddressType
+    {
+        $recipient = new EmailAddressType();
+        $recipient->EmailAddress = $address->getAddress();
+        if ($address->getName() !== null) {
+            $recipient->Name = $address->getName();
+        }
+
+        return $recipient;
     }
 }
