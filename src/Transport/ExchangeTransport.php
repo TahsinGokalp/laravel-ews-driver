@@ -36,7 +36,9 @@ class ExchangeTransport extends AbstractTransport
      */
     protected function doSend(SentMessage $message): void {
 
-        $email = MessageConverter::toEmail($message->getOriginalMessage());
+        $originalMessage = $message->getOriginalMessage();
+
+        $email = MessageConverter::toEmail($originalMessage);
 
         $client = new Client(
             $this->config->host,
@@ -61,18 +63,18 @@ class ExchangeTransport extends AbstractTransport
         $ewsMessage->From->Mailbox->EmailAddress = $this->config->from;
 
         // Set the recipient.
-        foreach ($message->getTo() as $address) {
+        foreach ($originalMessage->getTo() as $address) {
             $ewsMessage->ToRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
 
         // Set the CC
-        foreach ($message->getCc() as $address) {
+        foreach ($originalMessage->getCc() as $address) {
             $ewsMessage->CcRecipients ??= new ArrayOfRecipientsType();
             $ewsMessage->CcRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
 
         // Set the BCC
-        foreach ($message->getBcc() as $address) {
+        foreach ($originalMessage->getBcc() as $address) {
             $ewsMessage->BccRecipients ??= new ArrayOfRecipientsType();
             $ewsMessage->BccRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
