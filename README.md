@@ -1,7 +1,7 @@
 Laravel Exchange Web Services Driver
 ====
 
-![Packagist Version](https://img.shields.io/packagist/v/tahsingokalp/laravel-ews-driver)
+![Packagist Version](https://img.shields.io/packagist/v/tahsingokalp/laravel-ews-driver) 
 ![Packagist PHP Version Support](https://img.shields.io/packagist/php-v/tahsingokalp/laravel-ews-driver)
 
 
