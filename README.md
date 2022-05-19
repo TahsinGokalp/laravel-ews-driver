@@ -1,9 +1,6 @@
 Laravel Exchange Web Services Driver
 ====
 
-![Packagist Version](https://img.shields.io/packagist/v/tahsingokalp/laravel-ews-driver) 
-![Packagist PHP Version Support](https://img.shields.io/packagist/php-v/tahsingokalp/laravel-ews-driver)
-
 
 A Mail Driver with support for Exchange Web Services, using the original Laravel API. This library extends the original Laravel classes, so it uses exactly the same methods.
 This package requires a access to a EWS host.
