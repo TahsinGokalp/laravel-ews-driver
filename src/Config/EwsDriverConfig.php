@@ -2,7 +2,8 @@
 
 namespace TahsinGokalp\LaravelEwsDriver\Config;
 
-class EwsDriverConfig{
+class EwsDriverConfig
+{
     public string $from;
     public string $host;
     public string $username;

@@ -18,8 +18,8 @@ use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\MessageConverter;
-use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
+use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
 
 class ExchangeTransport extends AbstractTransport
 {
@@ -34,8 +34,8 @@ class ExchangeTransport extends AbstractTransport
     /**
      * @throws EwsException
      */
-    protected function doSend(SentMessage $message): void {
-
+    protected function doSend(SentMessage $message): void
+    {
         $originalMessage = $message->getOriginalMessage();
 
         $email = MessageConverter::toEmail($originalMessage);
@@ -117,6 +117,7 @@ class ExchangeTransport extends AbstractTransport
             if ($response_message->ResponseClass !== ResponseClassType::SUCCESS) {
                 $code = $response_message->ResponseCode;
                 $ewsMessage = $response_message->MessageText;
+
                 throw new EwsException("Message failed to create with \"$code: $ewsMessage\"\n");
             }
         }
@@ -133,7 +134,8 @@ class ExchangeTransport extends AbstractTransport
     }
 
     /**
-     * @param  Address  $address
+     * @param Address $address
+     *
      * @return EmailAddressType
      */
     protected function addressToExchangeAddress(Address $address): EmailAddressType
