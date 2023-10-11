@@ -47,7 +47,7 @@ class ExchangeTransport extends AbstractTransport
             $this->config->version
         );
 
-        $client->setCurlOptions(array(CURLOPT_SSL_VERIFYPEER => false));
+        $client->setCurlOptions([CURLOPT_SSL_VERIFYPEER => false]);
 
         $request = new CreateItemType();
         $request->Items = new NonEmptyArrayOfAllItemsType();
