@@ -19,6 +19,7 @@ use Symfony\Component\Mailer\Transport\FailoverTransport;
 use Symfony\Component\Mailer\Transport\NullTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
+use Symfony\Component\Mime\Part\DataPart;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
 use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
 use TahsinGokalp\LaravelEwsDriver\Tests\Fakes\FakeExchangeTransport;
@@ -184,11 +185,72 @@ class ExchangeTransportTest extends TestCase
         $this->assertSame('report.txt', $attachments[0]->Name);
         $this->assertSame('text/plain', $attachments[0]->ContentType);
         $this->assertSame('first file contents', $attachments[0]->Content);
-        $this->assertNotEmpty($attachments[0]->ContentId);
+        $this->assertNull($attachments[0]->IsInline);
+        $this->assertNull($attachments[0]->ContentId);
 
         $this->assertSame('invoice.pdf', $attachments[1]->Name);
         $this->assertSame('application/pdf', $attachments[1]->ContentType);
         $this->assertSame('%PDF-1.4 fake', $attachments[1]->Content);
+    }
+
+    public function test_it_marks_embedded_images_inline_and_rewrites_cid_references(): void
+    {
+        $image = (new DataPart('png-bytes', 'logo.png', 'image/png'))->asInline();
+
+        $this->send(
+            $this->makeEmail()
+                ->html('<img src="cid:logo.png"> <img src=cid:logo.png>')
+                ->addPart($image)
+        );
+
+        $message = $this->sentMessage();
+        $attachment = $message->Attachments->FileAttachment[0];
+        $contentId = $image->getContentId();
+
+        $this->assertTrue($attachment->IsInline);
+        $this->assertSame($contentId, $attachment->ContentId);
+        $this->assertSame('logo.png', $attachment->Name);
+        $this->assertSame('png-bytes', $attachment->Content);
+        $this->assertSame("<img src=\"cid:$contentId\"> <img src=cid:$contentId>", $message->Body->_);
+    }
+
+    public function test_it_keeps_references_made_by_content_id(): void
+    {
+        $image = (new DataPart('png-bytes', 'logo.png', 'image/png'))->asInline()->setContentId('logo@example.com');
+
+        $this->send($this->makeEmail()->html('<img src="cid:logo@example.com">')->addPart($image));
+
+        $message = $this->sentMessage();
+        $this->assertTrue($message->Attachments->FileAttachment[0]->IsInline);
+        $this->assertSame('logo@example.com', $message->Attachments->FileAttachment[0]->ContentId);
+        $this->assertSame('<img src="cid:logo@example.com">', $message->Body->_);
+    }
+
+    public function test_attachment_referenced_by_cid_is_treated_as_inline(): void
+    {
+        $this->send(
+            $this->makeEmail()
+                ->html('<img src="cid:chart.png">')
+                ->attach('png-bytes', 'chart.png', 'image/png')
+                ->attach('pdf-bytes', 'report.pdf', 'application/pdf')
+        );
+
+        [$chart, $report] = $this->sentMessage()->Attachments->FileAttachment;
+
+        $this->assertTrue($chart->IsInline);
+        $this->assertNotEmpty($chart->ContentId);
+        $this->assertSame('<img src="cid:'.$chart->ContentId.'">', $this->sentMessage()->Body->_);
+        $this->assertNull($report->IsInline);
+    }
+
+    public function test_it_reads_stream_bodies(): void
+    {
+        $html = fopen('php://memory', 'r+');
+        fwrite($html, '<p>Streamed</p>');
+
+        $this->send($this->makeEmail()->html($html));
+
+        $this->assertSame('<p>Streamed</p>', $this->sentMessage()->Body->_);
     }
 
     public function test_it_sends_a_single_message_per_request(): void

@@ -19,6 +19,7 @@ use Symfony\Component\Mailer\Transport\AbstractTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\MessageConverter;
+use Symfony\Component\Mime\Part\DataPart;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
 use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
 use Throwable;
@@ -77,32 +78,44 @@ class ExchangeTransport extends AbstractTransport
             $ewsMessage->BccRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
 
-        // Set the ewsMessage body.
-        $ewsMessage->Body = new BodyType();
+        $htmlBody = $this->bodyToString($email->getHtmlBody());
+        $cidReplacements = [];
 
-        if ($htmlBody = $email->getHtmlBody()) {
-            $ewsMessage->Body->BodyType = BodyTypeType::HTML;
-            $ewsMessage->Body->_ = $htmlBody;
-        } else {
-            $ewsMessage->Body->BodyType = BodyTypeType::TEXT;
-            $ewsMessage->Body->_ = $email->getTextBody();
-        }
-
-        // Add attachments
+        // Add attachments, marking embedded images as inline.
         foreach ($email->getAttachments() as $attachment) {
             $headers = $attachment->getPreparedHeaders();
-            $name = $headers->getHeaderParameter('content-type', 'name');
-            $contentType = $headers->getHeaderBody('content-type');
+            $name = $headers->getHeaderParameter('Content-Type', 'name');
 
             $fileAttachment = new FileAttachmentType();
             $fileAttachment->Content = $attachment->getBody();
-            $fileAttachment->ContentId = $attachment->getContentId();
             $fileAttachment->Name = $name;
-            $fileAttachment->ContentType = $contentType;
+            $fileAttachment->ContentType = $headers->getHeaderBody('Content-Type');
+
+            if ($this->isInline($attachment, $name, $htmlBody)) {
+                $contentId = $attachment->getContentId();
+                $fileAttachment->IsInline = true;
+                $fileAttachment->ContentId = $contentId;
+
+                if ($name !== null && $name !== $contentId) {
+                    $cidReplacements['cid:'.$name] = 'cid:'.$contentId;
+                }
+            }
 
             $ewsMessage->Attachments ??= new NonEmptyArrayOfAttachmentsType();
             $ewsMessage->Attachments->FileAttachment ??= [];
             $ewsMessage->Attachments->FileAttachment[] = $fileAttachment;
+        }
+
+        // Set the ewsMessage body.
+        $ewsMessage->Body = new BodyType();
+
+        if ($htmlBody !== null && $htmlBody !== '') {
+            $ewsMessage->Body->BodyType = BodyTypeType::HTML;
+            // Point cid: references made by file name at the attachment's Content-ID.
+            $ewsMessage->Body->_ = strtr($htmlBody, $cidReplacements);
+        } else {
+            $ewsMessage->Body->BodyType = BodyTypeType::TEXT;
+            $ewsMessage->Body->_ = $this->bodyToString($email->getTextBody());
         }
 
         $request->Items->Message[] = $ewsMessage;
@@ -155,6 +168,48 @@ class ExchangeTransport extends AbstractTransport
     public function __toString(): string
     {
         return 'exchange';
+    }
+
+    /**
+     * Determine whether an attachment is embedded in the HTML body.
+     *
+     * @param DataPart    $attachment
+     * @param string|null $name
+     * @param string|null $htmlBody
+     *
+     * @return bool
+     */
+    protected function isInline(DataPart $attachment, ?string $name, ?string $htmlBody): bool
+    {
+        if ($attachment->getPreparedHeaders()->getHeaderBody('Content-Disposition') === 'inline') {
+            return true;
+        }
+
+        if ($htmlBody === null) {
+            return false;
+        }
+
+        // Symfony treats parts referenced as cid:<name> or cid:<content-id> as inline.
+        return ($name !== null && str_contains($htmlBody, 'cid:'.$name))
+            || ($attachment->hasContentId() && str_contains($htmlBody, 'cid:'.$attachment->getContentId()));
+    }
+
+    /**
+     * @param resource|string|null $body
+     *
+     * @return string|null
+     */
+    protected function bodyToString($body): ?string
+    {
+        if (is_resource($body)) {
+            if (stream_get_meta_data($body)['seekable'] ?? false) {
+                rewind($body);
+            }
+
+            return stream_get_contents($body);
+        }
+
+        return $body;
     }
 
     /**
