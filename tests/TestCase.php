@@ -2,6 +2,7 @@
 
 namespace TahsinGokalp\LaravelEwsDriver\Tests;
 
+use Illuminate\Mail\MailServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
 use TahsinGokalp\LaravelEwsDriver\EwsServiceProvider;
 
@@ -9,7 +10,8 @@ abstract class TestCase extends Orchestra
 {
     protected function getPackageProviders($app): array
     {
-        return [EwsServiceProvider::class];
+        // Laravel apps load MailServiceProvider by default; Testbench does not.
+        return [MailServiceProvider::class, EwsServiceProvider::class];
     }
 
     protected function defineEnvironment($app): void

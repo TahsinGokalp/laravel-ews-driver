@@ -3,20 +3,18 @@
 namespace TahsinGokalp\LaravelEwsDriver;
 
 use Illuminate\Mail\MailManager;
-use Illuminate\Mail\MailServiceProvider;
+use Illuminate\Support\ServiceProvider;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
 use TahsinGokalp\LaravelEwsDriver\Transport\ExchangeTransport;
 
-class EwsServiceProvider extends MailServiceProvider
+class EwsServiceProvider extends ServiceProvider
 {
-    public function register(): void
+    public function boot(): void
     {
-        parent::register();
-
-        $this->app->afterResolving(MailManager::class, function (MailManager $mailManager) {
-            $mailManager->extend('exchange', function ($config) {
+        $this->callAfterResolving('mail.manager', function (MailManager $mailManager) {
+            $mailManager->extend('exchange', function (array $config) {
                 return new ExchangeTransport(
-                    EwsDriverConfig::fromArray($config, config('mail.from.address'))
+                    EwsDriverConfig::fromArray($config, $this->app['config']->get('mail.from.address'))
                 );
             });
         });
