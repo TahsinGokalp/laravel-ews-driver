@@ -9,7 +9,8 @@ This library uses the [php-ews](https://github.com/jamesiarmes/php-ews/) library
 Therefore requires the following dependencies:
 
 * Composer
-* PHP 8.1 or greater
+* PHP 8.1 or greater (Laravel 13 requires PHP 8.3, Symfony 8 requires PHP 8.4)
+* Laravel 10, 11, 12 or 13
 * cURL with NTLM support (7.30.0+ recommended)
 * Exchange 2007 or later
 

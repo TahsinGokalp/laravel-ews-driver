@@ -533,7 +533,7 @@ class ExchangeTransportTest extends TestCase
 
     private function failingClient(\Throwable $error): Client
     {
-        $client = $this->createMock(Client::class);
+        $client = $this->createStub(Client::class);
         $client->method('CreateItem')->willThrowException($error);
 
         return $client;
