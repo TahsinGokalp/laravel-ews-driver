@@ -5,12 +5,17 @@ namespace TahsinGokalp\LaravelEwsDriver\Tests\Unit;
 use jamesiarmes\PhpEws\ArrayType\ArrayOfResponseMessagesType;
 use jamesiarmes\PhpEws\Client;
 use jamesiarmes\PhpEws\Enumeration\BodyTypeType;
+use jamesiarmes\PhpEws\Enumeration\DistinguishedPropertySetType;
+use jamesiarmes\PhpEws\Enumeration\ImportanceChoicesType;
+use jamesiarmes\PhpEws\Enumeration\MapiPropertyTypeType;
 use jamesiarmes\PhpEws\Enumeration\ResponseClassType;
 use jamesiarmes\PhpEws\Request\CreateItemType;
 use jamesiarmes\PhpEws\Response\CreateItemResponseType;
 use jamesiarmes\PhpEws\Response\ItemInfoResponseMessageType;
 use jamesiarmes\PhpEws\Type\EmailAddressType;
+use jamesiarmes\PhpEws\Type\ExtendedPropertyType;
 use jamesiarmes\PhpEws\Type\MessageType;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use ReflectionProperty;
@@ -251,6 +256,101 @@ class ExchangeTransportTest extends TestCase
         $this->send($this->makeEmail()->html($html));
 
         $this->assertSame('<p>Streamed</p>', $this->sentMessage()->Body->_);
+    }
+
+    public function test_it_maps_reply_to(): void
+    {
+        $this->send($this->makeEmail()->replyTo(new Address('support@example.com', 'Support'), 'help@example.com'));
+
+        $mailboxes = $this->sentMessage()->ReplyTo->Mailbox;
+
+        $this->assertCount(2, $mailboxes);
+        $this->assertSame('support@example.com', $mailboxes[0]->EmailAddress);
+        $this->assertSame('Support', $mailboxes[0]->Name);
+        $this->assertSame('help@example.com', $mailboxes[1]->EmailAddress);
+    }
+
+    public function test_it_leaves_optional_header_fields_empty_by_default(): void
+    {
+        $this->send($this->makeEmail());
+
+        $message = $this->sentMessage();
+        $this->assertNull($message->ReplyTo);
+        $this->assertNull($message->Importance);
+        $this->assertNull($message->IsReadReceiptRequested);
+        $this->assertNull($message->IsDeliveryReceiptRequested);
+        $this->assertNull($message->InReplyTo);
+        $this->assertNull($message->References);
+        $this->assertSame([], $message->ExtendedProperty);
+    }
+
+    #[DataProvider('priorities')]
+    public function test_it_maps_priority_to_importance(int $priority, string $importance): void
+    {
+        $this->send($this->makeEmail()->priority($priority));
+
+        $this->assertSame($importance, $this->sentMessage()->Importance);
+    }
+
+    public static function priorities(): array
+    {
+        return [
+            'highest' => [Email::PRIORITY_HIGHEST, ImportanceChoicesType::HIGH],
+            'high' => [Email::PRIORITY_HIGH, ImportanceChoicesType::HIGH],
+            'normal' => [Email::PRIORITY_NORMAL, ImportanceChoicesType::NORMAL],
+            'low' => [Email::PRIORITY_LOW, ImportanceChoicesType::LOW],
+            'lowest' => [Email::PRIORITY_LOWEST, ImportanceChoicesType::LOW],
+        ];
+    }
+
+    public function test_it_requests_read_and_delivery_receipts(): void
+    {
+        $email = $this->makeEmail();
+        $email->getHeaders()->addMailboxListHeader('Disposition-Notification-To', ['app@example.com']);
+        $email->getHeaders()->addMailboxListHeader('Return-Receipt-To', ['app@example.com']);
+
+        $this->send($email);
+
+        $message = $this->sentMessage();
+        $this->assertTrue($message->IsReadReceiptRequested);
+        $this->assertTrue($message->IsDeliveryReceiptRequested);
+        $this->assertSame([], $message->ExtendedProperty);
+    }
+
+    public function test_it_maps_threading_headers(): void
+    {
+        $email = $this->makeEmail();
+        $email->getHeaders()->addIdHeader('In-Reply-To', 'parent@example.com');
+        $email->getHeaders()->addIdHeader('References', ['root@example.com', 'parent@example.com']);
+
+        $this->send($email);
+
+        $message = $this->sentMessage();
+        $this->assertSame('<parent@example.com>', $message->InReplyTo);
+        $this->assertSame('<root@example.com> <parent@example.com>', $message->References);
+    }
+
+    public function test_it_forwards_custom_headers_as_internet_headers(): void
+    {
+        $email = $this->makeEmail();
+        $email->getHeaders()
+            ->addTextHeader('X-Campaign', 'autumn-sale')
+            ->addTextHeader('List-Unsubscribe', '<https://example.com/unsubscribe>');
+
+        $this->send($email);
+
+        $properties = $this->sentMessage()->ExtendedProperty;
+
+        $this->assertCount(2, $properties);
+        $this->assertContainsOnlyInstancesOf(ExtendedPropertyType::class, $properties);
+
+        $this->assertSame(DistinguishedPropertySetType::INTERNET_HEADERS, $properties[0]->ExtendedFieldURI->DistinguishedPropertySetId);
+        $this->assertSame(MapiPropertyTypeType::STRING, $properties[0]->ExtendedFieldURI->PropertyType);
+        $this->assertSame('X-Campaign', $properties[0]->ExtendedFieldURI->PropertyName);
+        $this->assertSame('autumn-sale', $properties[0]->Value);
+
+        $this->assertSame('List-Unsubscribe', $properties[1]->ExtendedFieldURI->PropertyName);
+        $this->assertSame('<https://example.com/unsubscribe>', $properties[1]->Value);
     }
 
     public function test_it_sends_a_single_message_per_request(): void

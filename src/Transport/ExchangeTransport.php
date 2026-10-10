@@ -7,12 +7,17 @@ use jamesiarmes\PhpEws\ArrayType\NonEmptyArrayOfAllItemsType;
 use jamesiarmes\PhpEws\ArrayType\NonEmptyArrayOfAttachmentsType;
 use jamesiarmes\PhpEws\Client;
 use jamesiarmes\PhpEws\Enumeration\BodyTypeType;
+use jamesiarmes\PhpEws\Enumeration\DistinguishedPropertySetType;
+use jamesiarmes\PhpEws\Enumeration\ImportanceChoicesType;
+use jamesiarmes\PhpEws\Enumeration\MapiPropertyTypeType;
 use jamesiarmes\PhpEws\Enumeration\ResponseClassType;
 use jamesiarmes\PhpEws\Request\CreateItemType;
 use jamesiarmes\PhpEws\Type\BodyType;
 use jamesiarmes\PhpEws\Type\EmailAddressType;
+use jamesiarmes\PhpEws\Type\ExtendedPropertyType;
 use jamesiarmes\PhpEws\Type\FileAttachmentType;
 use jamesiarmes\PhpEws\Type\MessageType;
+use jamesiarmes\PhpEws\Type\PathToExtendedFieldType;
 use jamesiarmes\PhpEws\Type\SingleRecipientType;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractTransport;
@@ -26,6 +31,17 @@ use Throwable;
 
 class ExchangeTransport extends AbstractTransport
 {
+    /**
+     * Headers that are mapped to EWS fields or set by Exchange itself, and
+     * so are not forwarded as custom internet headers.
+     */
+    protected const MAPPED_HEADERS = [
+        'from', 'sender', 'to', 'cc', 'bcc', 'reply-to', 'subject', 'date',
+        'message-id', 'in-reply-to', 'references', 'return-path',
+        'mime-version', 'content-type', 'content-transfer-encoding', 'content-disposition',
+        'x-priority', 'disposition-notification-to', 'return-receipt-to',
+    ];
+
     protected EwsDriverConfig $config;
 
     public function __construct(EwsDriverConfig $config)
@@ -77,6 +93,9 @@ class ExchangeTransport extends AbstractTransport
             $ewsMessage->BccRecipients ??= new ArrayOfRecipientsType();
             $ewsMessage->BccRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
+
+        // Set Reply-To, importance, receipts, threading and custom headers.
+        $this->applyHeaders($email, $ewsMessage);
 
         $htmlBody = $this->bodyToString($email->getHtmlBody());
         $cidReplacements = [];
@@ -168,6 +187,64 @@ class ExchangeTransport extends AbstractTransport
     public function __toString(): string
     {
         return 'exchange';
+    }
+
+    /**
+     * Map message headers that EWS has dedicated fields for, and forward the
+     * remaining custom headers as internet header extended properties.
+     *
+     * @param Email       $email
+     * @param MessageType $ewsMessage
+     *
+     * @return void
+     */
+    protected function applyHeaders(Email $email, MessageType $ewsMessage): void
+    {
+        foreach ($email->getReplyTo() as $address) {
+            $ewsMessage->ReplyTo ??= new ArrayOfRecipientsType();
+            $ewsMessage->ReplyTo->Mailbox[] = $this->addressToExchangeAddress($address);
+        }
+
+        $headers = $email->getHeaders();
+
+        if ($headers->has('X-Priority')) {
+            $ewsMessage->Importance = match (true) {
+                $email->getPriority() < Email::PRIORITY_NORMAL => ImportanceChoicesType::HIGH,
+                $email->getPriority() > Email::PRIORITY_NORMAL => ImportanceChoicesType::LOW,
+                default => ImportanceChoicesType::NORMAL,
+            };
+        }
+
+        if ($headers->has('Disposition-Notification-To')) {
+            $ewsMessage->IsReadReceiptRequested = true;
+        }
+
+        if ($headers->has('Return-Receipt-To')) {
+            $ewsMessage->IsDeliveryReceiptRequested = true;
+        }
+
+        if ($headers->has('In-Reply-To')) {
+            $ewsMessage->InReplyTo = $headers->get('In-Reply-To')->getBodyAsString();
+        }
+
+        if ($headers->has('References')) {
+            $ewsMessage->References = $headers->get('References')->getBodyAsString();
+        }
+
+        foreach ($headers->all() as $header) {
+            if (in_array(strtolower($header->getName()), self::MAPPED_HEADERS, true)) {
+                continue;
+            }
+
+            $property = new ExtendedPropertyType();
+            $property->ExtendedFieldURI = new PathToExtendedFieldType();
+            $property->ExtendedFieldURI->DistinguishedPropertySetId = DistinguishedPropertySetType::INTERNET_HEADERS;
+            $property->ExtendedFieldURI->PropertyName = $header->getName();
+            $property->ExtendedFieldURI->PropertyType = MapiPropertyTypeType::STRING;
+            $property->Value = $header->getBodyAsString();
+
+            $ewsMessage->ExtendedProperty[] = $property;
+        }
     }
 
     /**
