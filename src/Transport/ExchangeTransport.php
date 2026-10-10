@@ -17,6 +17,7 @@ use jamesiarmes\PhpEws\Type\SingleRecipientType;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractTransport;
 use Symfony\Component\Mime\Address;
+use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\MessageConverter;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
 use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
@@ -40,14 +41,7 @@ class ExchangeTransport extends AbstractTransport
 
         $email = MessageConverter::toEmail($originalMessage);
 
-        $client = new Client(
-            $this->config->host,
-            $this->config->username,
-            $this->config->password,
-            $this->config->version
-        );
-
-        $client->setCurlOptions([CURLOPT_SSL_VERIFYPEER => false]);
+        $client = $this->createClient();
 
         $request = new CreateItemType();
         $request->Items = new NonEmptyArrayOfAllItemsType();
@@ -59,24 +53,25 @@ class ExchangeTransport extends AbstractTransport
         $ewsMessage->Subject = $email->getSubject();
         $ewsMessage->ToRecipients = new ArrayOfRecipientsType();
 
-        // Set the sender.
-        $ewsMessage->From = new SingleRecipientType();
-        $ewsMessage->From->Mailbox = new EmailAddressType();
-        $ewsMessage->From->Mailbox->EmailAddress = $this->config->from;
+        // Set the sender, falling back to the configured address.
+        if ($sender = $this->resolveSender($email)) {
+            $ewsMessage->From = new SingleRecipientType();
+            $ewsMessage->From->Mailbox = $sender;
+        }
 
         // Set the recipient.
-        foreach ($originalMessage->getTo() as $address) {
+        foreach ($email->getTo() as $address) {
             $ewsMessage->ToRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
 
         // Set the CC
-        foreach ($originalMessage->getCc() as $address) {
+        foreach ($email->getCc() as $address) {
             $ewsMessage->CcRecipients ??= new ArrayOfRecipientsType();
             $ewsMessage->CcRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
 
         // Set the BCC
-        foreach ($originalMessage->getBcc() as $address) {
+        foreach ($email->getBcc() as $address) {
             $ewsMessage->BccRecipients ??= new ArrayOfRecipientsType();
             $ewsMessage->BccRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
@@ -126,6 +121,27 @@ class ExchangeTransport extends AbstractTransport
     }
 
     /**
+     * Create the EWS client used to send the message.
+     *
+     * @return Client
+     */
+    protected function createClient(): Client
+    {
+        $client = new Client(
+            $this->config->host,
+            $this->config->username,
+            $this->config->password,
+            $this->config->version
+        );
+
+        $client->setCurlOptions($this->config->verifySsl
+            ? [CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2]
+            : [CURLOPT_SSL_VERIFYPEER => false]);
+
+        return $client;
+    }
+
+    /**
      * Get the string representation of the transport.
      *
      * @return string
@@ -133,6 +149,26 @@ class ExchangeTransport extends AbstractTransport
     public function __toString(): string
     {
         return 'exchange';
+    }
+
+    /**
+     * Resolve the sender mailbox from the message, or the configured address.
+     *
+     * @param Email $email
+     *
+     * @return EmailAddressType|null
+     */
+    protected function resolveSender(Email $email): ?EmailAddressType
+    {
+        if ($from = $email->getFrom()) {
+            return $this->addressToExchangeAddress($from[0]);
+        }
+
+        if ($this->config->from !== null) {
+            return $this->addressToExchangeAddress(new Address($this->config->from));
+        }
+
+        return null;
     }
 
     /**
@@ -144,7 +180,7 @@ class ExchangeTransport extends AbstractTransport
     {
         $recipient = new EmailAddressType();
         $recipient->EmailAddress = $address->getAddress();
-        if ($address->getName() !== null) {
+        if ($address->getName() !== '') {
             $recipient->Name = $address->getName();
         }
 

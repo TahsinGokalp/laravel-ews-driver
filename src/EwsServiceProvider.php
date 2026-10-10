@@ -15,15 +15,9 @@ class EwsServiceProvider extends MailServiceProvider
 
         $this->app->afterResolving(MailManager::class, function (MailManager $mailManager) {
             $mailManager->extend('exchange', function ($config) {
-                $driverConfig = new EwsDriverConfig();
-                $driverConfig->from = config('mail.from.address');
-                $driverConfig->host = $config['host'];
-                $driverConfig->username = $config['username'];
-                $driverConfig->password = $config['password'];
-                $driverConfig->version = $config['version'];
-                $driverConfig->messageDispositionType = $config['messageDispositionType'];
-
-                return new ExchangeTransport($driverConfig);
+                return new ExchangeTransport(
+                    EwsDriverConfig::fromArray($config, config('mail.from.address'))
+                );
             });
         });
     }
