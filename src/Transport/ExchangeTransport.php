@@ -40,14 +40,7 @@ class ExchangeTransport extends AbstractTransport
 
         $email = MessageConverter::toEmail($originalMessage);
 
-        $client = new Client(
-            $this->config->host,
-            $this->config->username,
-            $this->config->password,
-            $this->config->version
-        );
-
-        $client->setCurlOptions([CURLOPT_SSL_VERIFYPEER => false]);
+        $client = $this->createClient();
 
         $request = new CreateItemType();
         $request->Items = new NonEmptyArrayOfAllItemsType();
@@ -126,6 +119,25 @@ class ExchangeTransport extends AbstractTransport
     }
 
     /**
+     * Create the EWS client used to send the message.
+     *
+     * @return Client
+     */
+    protected function createClient(): Client
+    {
+        $client = new Client(
+            $this->config->host,
+            $this->config->username,
+            $this->config->password,
+            $this->config->version
+        );
+
+        $client->setCurlOptions([CURLOPT_SSL_VERIFYPEER => false]);
+
+        return $client;
+    }
+
+    /**
      * Get the string representation of the transport.
      *
      * @return string
@@ -144,7 +156,7 @@ class ExchangeTransport extends AbstractTransport
     {
         $recipient = new EmailAddressType();
         $recipient->EmailAddress = $address->getAddress();
-        if ($address->getName() !== null) {
+        if ($address->getName() !== '') {
             $recipient->Name = $address->getName();
         }
 
