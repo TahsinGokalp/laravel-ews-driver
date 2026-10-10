@@ -19,6 +19,7 @@ use jamesiarmes\PhpEws\Type\FileAttachmentType;
 use jamesiarmes\PhpEws\Type\MessageType;
 use jamesiarmes\PhpEws\Type\PathToExtendedFieldType;
 use jamesiarmes\PhpEws\Type\SingleRecipientType;
+use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractTransport;
 use Symfony\Component\Mime\Address;
@@ -41,6 +42,11 @@ class ExchangeTransport extends AbstractTransport
         'mime-version', 'content-type', 'content-transfer-encoding', 'content-disposition',
         'x-priority', 'disposition-notification-to', 'return-receipt-to',
     ];
+
+    /**
+     * MAPI property tag of the Message-ID header (PidTagInternetMessageId).
+     */
+    protected const PID_TAG_INTERNET_MESSAGE_ID = '0x1035';
 
     protected EwsDriverConfig $config;
 
@@ -69,7 +75,6 @@ class ExchangeTransport extends AbstractTransport
         // Create the ewsMessage.
         $ewsMessage = new MessageType();
         $ewsMessage->Subject = $email->getSubject();
-        $ewsMessage->ToRecipients = new ArrayOfRecipientsType();
 
         // Set the sender, falling back to the configured address.
         if ($sender = $this->resolveSender($email)) {
@@ -77,8 +82,10 @@ class ExchangeTransport extends AbstractTransport
             $ewsMessage->From->Mailbox = $sender;
         }
 
-        // Set the recipient.
+        // Set the recipients. EWS has no separate envelope, so To and Cc come
+        // from the headers and every other envelope recipient is sent as Bcc.
         foreach ($email->getTo() as $address) {
+            $ewsMessage->ToRecipients ??= new ArrayOfRecipientsType();
             $ewsMessage->ToRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
 
@@ -89,13 +96,16 @@ class ExchangeTransport extends AbstractTransport
         }
 
         // Set the BCC
-        foreach ($email->getBcc() as $address) {
+        foreach ($this->bccRecipients($email, $message->getEnvelope()) as $address) {
             $ewsMessage->BccRecipients ??= new ArrayOfRecipientsType();
             $ewsMessage->BccRecipients->Mailbox[] = $this->addressToExchangeAddress($address);
         }
 
         // Set Reply-To, importance, receipts, threading and custom headers.
         $this->applyHeaders($email, $ewsMessage);
+
+        // Keep the Message-ID Laravel and Symfony report for this message.
+        $ewsMessage->ExtendedProperty[] = $this->messageIdProperty($message->getMessageId());
 
         $htmlBody = $this->bodyToString($email->getHtmlBody());
         $cidReplacements = [];
@@ -153,7 +163,7 @@ class ExchangeTransport extends AbstractTransport
                 $code = $response_message->ResponseCode;
                 $ewsMessage = $response_message->MessageText;
 
-                throw new EwsException("Message failed to create with \"$code: $ewsMessage\"\n");
+                throw new EwsException("Message failed to create with \"$code: $ewsMessage\"");
             }
         }
     }
@@ -245,6 +255,51 @@ class ExchangeTransport extends AbstractTransport
 
             $ewsMessage->ExtendedProperty[] = $property;
         }
+    }
+
+    /**
+     * Envelope recipients that are not already listed in To or Cc.
+     *
+     * @param Email    $email
+     * @param Envelope $envelope
+     *
+     * @return Address[]
+     */
+    protected function bccRecipients(Email $email, Envelope $envelope): array
+    {
+        $visible = array_map(
+            fn (Address $address) => strtolower($address->getAddress()),
+            array_merge($email->getTo(), $email->getCc())
+        );
+
+        // Prefer the Bcc header entry so the display name is kept.
+        $bcc = [];
+        foreach (array_merge($email->getBcc(), $envelope->getRecipients()) as $address) {
+            $key = strtolower($address->getAddress());
+            if (!in_array($key, $visible, true) && !isset($bcc[$key])) {
+                $bcc[$key] = $address;
+            }
+        }
+
+        return array_values($bcc);
+    }
+
+    /**
+     * Build the PidTagInternetMessageId extended property for a Message-ID.
+     *
+     * @param string $messageId
+     *
+     * @return ExtendedPropertyType
+     */
+    protected function messageIdProperty(string $messageId): ExtendedPropertyType
+    {
+        $property = new ExtendedPropertyType();
+        $property->ExtendedFieldURI = new PathToExtendedFieldType();
+        $property->ExtendedFieldURI->PropertyTag = self::PID_TAG_INTERNET_MESSAGE_ID;
+        $property->ExtendedFieldURI->PropertyType = MapiPropertyTypeType::STRING;
+        $property->Value = '<'.$messageId.'>';
+
+        return $property;
     }
 
     /**

@@ -19,6 +19,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use ReflectionProperty;
+use Symfony\Component\Mailer\Envelope;
 use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 use Symfony\Component\Mailer\Transport\FailoverTransport;
 use Symfony\Component\Mailer\Transport\NullTransport;
@@ -281,7 +282,7 @@ class ExchangeTransportTest extends TestCase
         $this->assertNull($message->IsDeliveryReceiptRequested);
         $this->assertNull($message->InReplyTo);
         $this->assertNull($message->References);
-        $this->assertSame([], $message->ExtendedProperty);
+        $this->assertSame([], $this->internetHeaders());
     }
 
     #[DataProvider('priorities')]
@@ -314,7 +315,7 @@ class ExchangeTransportTest extends TestCase
         $message = $this->sentMessage();
         $this->assertTrue($message->IsReadReceiptRequested);
         $this->assertTrue($message->IsDeliveryReceiptRequested);
-        $this->assertSame([], $message->ExtendedProperty);
+        $this->assertSame([], $this->internetHeaders());
     }
 
     public function test_it_maps_threading_headers(): void
@@ -339,7 +340,7 @@ class ExchangeTransportTest extends TestCase
 
         $this->send($email);
 
-        $properties = $this->sentMessage()->ExtendedProperty;
+        $properties = $this->internetHeaders();
 
         $this->assertCount(2, $properties);
         $this->assertContainsOnlyInstancesOf(ExtendedPropertyType::class, $properties);
@@ -353,6 +354,70 @@ class ExchangeTransportTest extends TestCase
         $this->assertSame('<https://example.com/unsubscribe>', $properties[1]->Value);
     }
 
+    public function test_it_keeps_the_symfony_message_id(): void
+    {
+        $sent = $this->send($this->makeEmail());
+
+        $messageIds = array_values(array_filter(
+            $this->sentMessage()->ExtendedProperty,
+            fn (ExtendedPropertyType $property) => $property->ExtendedFieldURI->PropertyTag === '0x1035'
+        ));
+
+        $this->assertCount(1, $messageIds);
+        $this->assertSame(MapiPropertyTypeType::STRING, $messageIds[0]->ExtendedFieldURI->PropertyType);
+        $this->assertSame('<'.$sent->getMessageId().'>', $messageIds[0]->Value);
+    }
+
+    public function test_it_keeps_an_existing_message_id_header(): void
+    {
+        $email = $this->makeEmail();
+        $email->getHeaders()->addIdHeader('Message-ID', 'custom-id@example.com');
+
+        $sent = $this->send($email);
+
+        $this->assertSame('custom-id@example.com', $sent->getMessageId());
+        $this->assertContains('<custom-id@example.com>', array_map(
+            fn (ExtendedPropertyType $property) => $property->Value,
+            $this->sentMessage()->ExtendedProperty
+        ));
+    }
+
+    public function test_it_sends_extra_envelope_recipients_as_bcc(): void
+    {
+        $envelope = new Envelope(new Address('app@example.com'), [
+            new Address('to@example.com'),
+            new Address('cc@example.com'),
+            new Address('hidden@example.com'),
+            new Address('HIDDEN@example.com'),
+        ]);
+
+        $this->send($this->makeEmail()->cc('cc@example.com'), envelope: $envelope);
+
+        $message = $this->sentMessage();
+        $this->assertCount(1, $message->ToRecipients->Mailbox);
+        $this->assertCount(1, $message->CcRecipients->Mailbox);
+        $this->assertCount(1, $message->BccRecipients->Mailbox);
+        $this->assertSame('hidden@example.com', $message->BccRecipients->Mailbox[0]->EmailAddress);
+    }
+
+    public function test_bcc_header_recipients_keep_their_names(): void
+    {
+        $this->send($this->makeEmail()->bcc(new Address('boss@example.com', 'The Boss')));
+
+        $bcc = $this->sentMessage()->BccRecipients->Mailbox;
+        $this->assertCount(1, $bcc);
+        $this->assertSame('The Boss', $bcc[0]->Name);
+    }
+
+    public function test_it_supports_bcc_only_messages(): void
+    {
+        $this->send((new Email())->from('app@example.com')->bcc('hidden@example.com')->text('Body'));
+
+        $message = $this->sentMessage();
+        $this->assertNull($message->ToRecipients);
+        $this->assertSame('hidden@example.com', $message->BccRecipients->Mailbox[0]->EmailAddress);
+    }
+
     public function test_it_sends_a_single_message_per_request(): void
     {
         $this->send($this->makeEmail());
@@ -362,12 +427,14 @@ class ExchangeTransportTest extends TestCase
 
     public function test_it_throws_when_exchange_returns_an_error(): void
     {
-        $this->expectException(EwsException::class);
-        $this->expectExceptionMessage('Message failed to create with "ErrorAccessDenied: Access is denied."');
-
-        $this->send($this->makeEmail(), $this->makeResponse([
-            [ResponseClassType::ERROR, 'ErrorAccessDenied', 'Access is denied.'],
-        ]));
+        try {
+            $this->send($this->makeEmail(), $this->makeResponse([
+                [ResponseClassType::ERROR, 'ErrorAccessDenied', 'Access is denied.'],
+            ]));
+            $this->fail('Expected an EwsException.');
+        } catch (EwsException $e) {
+            $this->assertSame('Message failed to create with "ErrorAccessDenied: Access is denied."', $e->getMessage());
+        }
     }
 
     public function test_it_throws_when_exchange_returns_a_warning(): void
@@ -430,8 +497,12 @@ class ExchangeTransportTest extends TestCase
         ));
     }
 
-    private function send(Email $email, ?CreateItemResponseType $response = null, ?EwsDriverConfig $config = null)
-    {
+    private function send(
+        Email $email,
+        ?CreateItemResponseType $response = null,
+        ?EwsDriverConfig $config = null,
+        ?Envelope $envelope = null,
+    ) {
         $client = $this->createMock(Client::class);
         $client->expects($this->once())
             ->method('CreateItem')
@@ -441,7 +512,18 @@ class ExchangeTransportTest extends TestCase
                 return $response ?? $this->makeResponse([[ResponseClassType::SUCCESS, 'NoError', null]]);
             });
 
-        return (new FakeExchangeTransport($config ?? $this->makeConfig(), $client))->send($email);
+        return (new FakeExchangeTransport($config ?? $this->makeConfig(), $client))->send($email, $envelope);
+    }
+
+    /**
+     * @return ExtendedPropertyType[]
+     */
+    private function internetHeaders(): array
+    {
+        return array_values(array_filter(
+            $this->sentMessage()->ExtendedProperty,
+            fn (ExtendedPropertyType $property) => $property->ExtendedFieldURI->DistinguishedPropertySetId === DistinguishedPropertySetType::INTERNET_HEADERS
+        ));
     }
 
     private function sendWithClient(Email $email, Client $client)
