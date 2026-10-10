@@ -2,9 +2,12 @@
 
 namespace TahsinGokalp\LaravelEwsDriver\Tests\Feature;
 
+use Illuminate\Contracts\Support\DeferrableProvider;
 use Illuminate\Mail\MailManager;
+use Illuminate\Mail\MailServiceProvider;
 use ReflectionProperty;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
+use TahsinGokalp\LaravelEwsDriver\EwsServiceProvider;
 use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
 use TahsinGokalp\LaravelEwsDriver\Tests\TestCase;
 use TahsinGokalp\LaravelEwsDriver\Transport\ExchangeTransport;
@@ -86,6 +89,32 @@ class EwsServiceProviderTest extends TestCase
         $this->expectExceptionMessage('The exchange mailer requires the "host" config value to be set.');
 
         $this->app->make(MailManager::class)->mailer('exchange');
+    }
+
+    public function test_it_does_not_replace_laravels_mail_services(): void
+    {
+        $provider = new EwsServiceProvider($this->app);
+
+        $this->assertNotInstanceOf(MailServiceProvider::class, $provider);
+        $this->assertNotInstanceOf(DeferrableProvider::class, $provider);
+        $this->assertSame($this->app->make('mail.manager'), $this->app->make(MailManager::class));
+    }
+
+    public function test_it_extends_a_mail_manager_resolved_before_boot(): void
+    {
+        $this->app->forgetInstance('mail.manager');
+        $manager = $this->app->make('mail.manager');
+
+        (new EwsServiceProvider($this->app))->boot();
+
+        $this->assertInstanceOf(ExchangeTransport::class, $manager->mailer('exchange')->getSymfonyTransport());
+    }
+
+    public function test_other_mailers_keep_working(): void
+    {
+        $this->app['config']->set('mail.mailers.array', ['transport' => 'array']);
+
+        $this->assertSame('array', (string) $this->app->make(MailManager::class)->mailer('array')->getSymfonyTransport());
     }
 
     private function driverConfig(): EwsDriverConfig
