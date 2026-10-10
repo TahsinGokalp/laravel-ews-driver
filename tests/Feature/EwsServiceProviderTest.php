@@ -5,6 +5,7 @@ namespace TahsinGokalp\LaravelEwsDriver\Tests\Feature;
 use Illuminate\Mail\MailManager;
 use ReflectionProperty;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
+use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
 use TahsinGokalp\LaravelEwsDriver\Tests\TestCase;
 use TahsinGokalp\LaravelEwsDriver\Transport\ExchangeTransport;
 
@@ -45,6 +46,46 @@ class EwsServiceProviderTest extends TestCase
             ExchangeTransport::class,
             $this->app->make('mailer')->getSymfonyTransport()
         );
+    }
+
+    public function test_optional_values_fall_back_to_defaults(): void
+    {
+        $this->app['config']->set('mail.mailers.exchange', [
+            'transport' => 'exchange',
+            'host' => 'webmail.example.com',
+            'username' => 'example-user',
+            'password' => 'example-password',
+        ]);
+
+        $config = $this->driverConfig();
+
+        $this->assertSame('Exchange2013', $config->version);
+        $this->assertSame('SendAndSaveCopy', $config->messageDispositionType);
+        $this->assertFalse($config->verifySsl);
+    }
+
+    public function test_it_reads_verify_ssl_from_mailer_config(): void
+    {
+        $this->app['config']->set('mail.mailers.exchange.verifySsl', true);
+
+        $this->assertTrue($this->driverConfig()->verifySsl);
+    }
+
+    public function test_global_from_address_is_optional(): void
+    {
+        $this->app['config']->set('mail.from.address', null);
+
+        $this->assertNull($this->driverConfig()->from);
+    }
+
+    public function test_missing_required_config_throws_a_clear_exception(): void
+    {
+        $this->app['config']->set('mail.mailers.exchange.host', null);
+
+        $this->expectException(EwsException::class);
+        $this->expectExceptionMessage('The exchange mailer requires the "host" config value to be set.');
+
+        $this->app->make(MailManager::class)->mailer('exchange');
     }
 
     private function driverConfig(): EwsDriverConfig

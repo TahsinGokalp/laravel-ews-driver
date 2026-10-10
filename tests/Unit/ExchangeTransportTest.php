@@ -30,7 +30,7 @@ class ExchangeTransportTest extends TestCase
         $this->assertSame('exchange', (string) new ExchangeTransport($this->makeConfig()));
     }
 
-    public function test_it_creates_client_from_config(): void
+    public function test_it_creates_client_from_config_without_ssl_verification_by_default(): void
     {
         $transport = new ExchangeTransport($this->makeConfig());
 
@@ -44,22 +44,54 @@ class ExchangeTransportTest extends TestCase
         $this->assertSame([CURLOPT_SSL_VERIFYPEER => false], $this->readProperty($client, 'curl_options'));
     }
 
-    public function test_it_sets_disposition_subject_and_sender(): void
+    public function test_it_verifies_ssl_when_enabled(): void
+    {
+        $config = $this->makeConfig();
+        $config->verifySsl = true;
+        $transport = new ExchangeTransport($config);
+
+        $client = (new ReflectionMethod($transport, 'createClient'))->invoke($transport);
+
+        $this->assertSame(
+            [CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2],
+            $this->readProperty($client, 'curl_options')
+        );
+    }
+
+    public function test_it_sets_disposition_and_subject(): void
     {
         $this->send($this->makeEmail()->subject('Hello there'));
 
         $this->assertSame('SendAndSaveCopy', $this->capturedRequest->MessageDisposition);
-
-        $message = $this->sentMessage();
-        $this->assertSame('Hello there', $message->Subject);
-        $this->assertSame('sender@example.com', $message->From->Mailbox->EmailAddress);
+        $this->assertSame('Hello there', $this->sentMessage()->Subject);
     }
 
-    public function test_sender_comes_from_config_instead_of_the_message(): void
+    public function test_sender_comes_from_the_message(): void
     {
-        $this->send($this->makeEmail()->from('someone-else@example.com'));
+        $this->send($this->makeEmail()->from(new Address('someone-else@example.com', 'Someone Else')));
 
-        $this->assertSame('sender@example.com', $this->sentMessage()->From->Mailbox->EmailAddress);
+        $mailbox = $this->sentMessage()->From->Mailbox;
+        $this->assertSame('someone-else@example.com', $mailbox->EmailAddress);
+        $this->assertSame('Someone Else', $mailbox->Name);
+    }
+
+    public function test_sender_falls_back_to_config_when_message_has_no_from(): void
+    {
+        $this->send((new Email())->sender('envelope@example.com')->to('to@example.com')->text('Body'));
+
+        $mailbox = $this->sentMessage()->From->Mailbox;
+        $this->assertSame('sender@example.com', $mailbox->EmailAddress);
+        $this->assertNull($mailbox->Name);
+    }
+
+    public function test_sender_is_omitted_when_neither_message_nor_config_has_one(): void
+    {
+        $config = $this->makeConfig();
+        $config->from = null;
+
+        $this->send((new Email())->sender('envelope@example.com')->to('to@example.com')->text('Body'), config: $config);
+
+        $this->assertNull($this->sentMessage()->From);
     }
 
     public function test_it_maps_to_recipients_with_names(): void
@@ -205,7 +237,7 @@ class ExchangeTransportTest extends TestCase
         ));
     }
 
-    private function send(Email $email, ?CreateItemResponseType $response = null)
+    private function send(Email $email, ?CreateItemResponseType $response = null, ?EwsDriverConfig $config = null)
     {
         $client = $this->createMock(Client::class);
         $client->expects($this->once())
@@ -216,7 +248,7 @@ class ExchangeTransportTest extends TestCase
                 return $response ?? $this->makeResponse([[ResponseClassType::SUCCESS, 'NoError', null]]);
             });
 
-        return (new FakeExchangeTransport($this->makeConfig(), $client))->send($email);
+        return (new FakeExchangeTransport($config ?? $this->makeConfig(), $client))->send($email);
     }
 
     private function sentMessage(): MessageType

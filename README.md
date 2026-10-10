@@ -54,6 +54,7 @@ return [
             'password' => env('MAIL_PASSWORD'),
             'version' => env('MAIL_VERSION'),
             'messageDispositionType' => env('MAIL_MESSAGE_DISPOSITION_TYPE'),
+            'verifySsl' => env('MAIL_VERIFY_SSL', false),
         ],
         .
         .
@@ -72,9 +73,31 @@ MAIL_USERNAME=examplemail
 MAIL_PASSWORD=examplepassword
 MAIL_VERSION=Exchange2010
 MAIL_MESSAGE_DISPOSITION_TYPE=SaveOnly|SendAndSaveCopy|SendOnly
+MAIL_VERIFY_SSL=false
 ```
 
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `host` | yes | | EWS host. |
+| `username` | yes | | EWS username. |
+| `password` | yes | | EWS password. |
+| `version` | no | `Exchange2013` | One of the `jamesiarmes\PhpEws\Client::VERSION_*` values. |
+| `messageDispositionType` | no | `SendAndSaveCopy` | `SaveOnly`, `SendAndSaveCopy` or `SendOnly`. |
+| `verifySsl` | no | `false` | Verify the EWS host's SSL certificate. Enable it whenever the host has a valid certificate. |
+
+A missing required value or an unknown `messageDispositionType` throws a `TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException` when the mailer is resolved.
+
+### Sender
+
+The message's `from` address (e.g. `Mail::to(...)->send(...)` with a mailable's `from`, or `mail.from.address`) is used as the sender. The global `mail.from.address` is only a fallback for messages without a `from` address. The EWS account must have "Send As" permission for any address other than its own mailbox.
+
 For more information on the Message Disposition Type, [view more here](https://github.com/jamesiarmes/php-ews/blob/master/src/Enumeration/MessageDispositionType.php)
+
+## Testing
+
+```
+composer test
+```
 
 ## Acknowledgments
 
