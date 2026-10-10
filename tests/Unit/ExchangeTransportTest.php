@@ -14,6 +14,9 @@ use jamesiarmes\PhpEws\Type\MessageType;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use ReflectionProperty;
+use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
+use Symfony\Component\Mailer\Transport\FailoverTransport;
+use Symfony\Component\Mailer\Transport\NullTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
@@ -226,6 +229,34 @@ class ExchangeTransportTest extends TestCase
         ]));
     }
 
+    public function test_it_wraps_client_errors_in_a_transport_exception(): void
+    {
+        $previous = new \Exception('SOAP client returned status of 401.', 401);
+
+        try {
+            $this->sendWithClient($this->makeEmail(), $this->failingClient($previous));
+            $this->fail('Expected an EwsException.');
+        } catch (EwsException $e) {
+            $this->assertInstanceOf(TransportExceptionInterface::class, $e);
+            $this->assertSame('Exchange request failed: SOAP client returned status of 401.', $e->getMessage());
+            $this->assertSame(401, $e->getCode());
+            $this->assertSame($previous, $e->getPrevious());
+        }
+    }
+
+    public function test_failover_transport_moves_on_when_exchange_fails(): void
+    {
+        $exchange = new FakeExchangeTransport(
+            $this->makeConfig(),
+            $this->failingClient(new \RuntimeException('Curl error: Could not connect to server'))
+        );
+        $backup = new NullTransport();
+
+        $sent = (new FailoverTransport([$exchange, $backup]))->send($this->makeEmail());
+
+        $this->assertNotNull($sent);
+    }
+
     public function test_it_returns_sent_message_on_success(): void
     {
         $sent = $this->send($this->makeEmail());
@@ -249,6 +280,19 @@ class ExchangeTransportTest extends TestCase
             });
 
         return (new FakeExchangeTransport($config ?? $this->makeConfig(), $client))->send($email);
+    }
+
+    private function sendWithClient(Email $email, Client $client)
+    {
+        return (new FakeExchangeTransport($this->makeConfig(), $client))->send($email);
+    }
+
+    private function failingClient(\Throwable $error): Client
+    {
+        $client = $this->createMock(Client::class);
+        $client->method('CreateItem')->willThrowException($error);
+
+        return $client;
     }
 
     private function sentMessage(): MessageType

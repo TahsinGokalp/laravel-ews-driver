@@ -21,6 +21,7 @@ use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\MessageConverter;
 use TahsinGokalp\LaravelEwsDriver\Config\EwsDriverConfig;
 use TahsinGokalp\LaravelEwsDriver\Exceptions\EwsException;
+use Throwable;
 
 class ExchangeTransport extends AbstractTransport
 {
@@ -105,7 +106,12 @@ class ExchangeTransport extends AbstractTransport
         }
 
         $request->Items->Message[] = $ewsMessage;
-        $response = $client->CreateItem($request);
+
+        try {
+            $response = $client->CreateItem($request);
+        } catch (Throwable $e) {
+            throw new EwsException('Exchange request failed: '.$e->getMessage(), (int) $e->getCode(), $e);
+        }
 
         // Iterate over the results, printing any error messages or ewsMessage ids.
         $response_messages = $response->ResponseMessages->CreateItemResponseMessage;
